@@ -1,0 +1,11 @@
+{
+    "id": "visual-ui-editor",
+    "name": "Visual UI Editor",
+    "version": "1.1.0",
+    "minAppVersion": "0.15.0",
+    "description": "A plugin to help you visually select and modify any UI element.",
+    "author": "eChorgi",
+    "authorUrl": "https://www.xiaohongshu.com/user/profile/61c83d00000000001000bd3e",
+    "fundingUrl": "https://www.xiaohongshu.com/user/profile/61c83d00000000001000bd3e",
+    "isDesktopOnly": true
+}
