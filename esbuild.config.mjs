@@ -37,7 +37,7 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "/Users/echorgi/Documents/eChorgi/.obsidian/plugins/ui-designer/main.js",
+	outfile: "/Users/echorgi/Documents/eChorgi/.obsidian/plugins/visual-ui-editor/main.js",
 	minify: prod,
 });
 

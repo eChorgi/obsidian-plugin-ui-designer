@@ -732,7 +732,27 @@ class CSSInspectorFloatingPanel {
         });
         // 添加selector提示
         this.selectorHint = selectorHintContainer.createDiv({ cls: 'selector-hint' });
-        this.selectorHint.textContent = `[@selector]\n${this.selector}\n`;
+        selectorHintContainer.addEventListener('mousedown', (e) => {
+            //把选择器提示的文本复制到剪贴板
+            if(this.selectorHint.textContent?.startsWith('[@selector]')) {
+                const selector = this.selector;
+                navigator.clipboard.writeText(selector).then(() => {
+                    new Notice(`已复制选择器: ${selector}`); 
+                }).catch(err => {
+                    console.error('复制失败:', err);
+                    new Notice('复制失败');
+                });
+                return;
+            }
+            const css = this.exportCSS(this.priority, this.isImportant);
+            navigator.clipboard.writeText(css).then(() => {
+                new Notice(`已复制css代码: ${css}`); 
+            }).catch(err => {
+                console.error('复制失败:', err);
+                new Notice('复制失败');
+            });
+        });
+        this.selectorHint.textContent = `[@selector]/ 点击复制选择器\n${this.selector}\n`;
         Object.assign(this.selectorHint.style, {
             position: 'absolute',
             top: '5px',
@@ -1058,10 +1078,10 @@ class CSSInspectorFloatingPanel {
                     this.style = this.style.slice(0, -1);
                 }
                 if(this.style === '') {
-                    this.selectorHint.textContent = `[@selector]\n${this.selector}\n`;
+                    this.selectorHint.textContent = `[@selector]/ 点击复制选择器\n${this.selector}\n`;
                 }
                 else {
-                    this.selectorHint.textContent = `[@css-preview]\n${this.selector}\n{\n\t${this.style}}`;
+                    this.selectorHint.textContent = `[@css-preview]/ 点击复制css代码\n${this.selector}\n{\n\t${this.style}}`;
                 }
             }
         )); // 初始化时同步一次预览
@@ -1164,10 +1184,10 @@ class CSSInspectorFloatingPanel {
                                     this.style = this.style.slice(0, -1);
                                 }
                                 if(this.style === '') {
-                                    this.selectorHint.textContent = `[@selector]\n${this.selector}\n`;
+                                    this.selectorHint.textContent = `[@selector]/ 点击复制选择器\n${this.selector}\n`;
                                 }
                                 else {
-                                    this.selectorHint.textContent = `[@css-preview]\n${this.selector}\n{\n\t${this.style}}`;
+                                    this.selectorHint.textContent = `[@css-preview]/ 点击复制css代码\n${this.selector}\n{\n\t${this.style}}`;
                                 }
                             });
                         }
@@ -1278,7 +1298,7 @@ class CSSInspectorFloatingPanel {
                     this.attributeEditors.forEach(editor => editor.reset());
                     this.styleEl?.remove();
                     this.style = '';
-                    this.selectorHint.textContent = `[@selector]\n${this.selector}\n`;
+                    this.selectorHint.textContent = `[@selector]/ 点击复制选择器\n${this.selector}\n`;
                 }
             }))
 
@@ -1631,8 +1651,8 @@ class MultiSelectorInstance {
         if (!this.mouseEl) return;
 
         
-        navigator.clipboard.writeText(this.selector);
-        new Notice(`已复制选择器: ${this.selector}`);
+        // navigator.clipboard.writeText(this.selector);
+        // new Notice(`已复制选择器: ${this.selector}`);
 
         // 打开编辑器弹窗，并将当前点击的元素传入
         const panel = new CSSInspectorFloatingPanel(this.app, this.mouseEl, this).open().setPosition(e.clientX + 30, 100);
