@@ -1,0 +1,86 @@
+.visual-ui-editor-hidden {
+    display: none !important;
+}
+.visual-ui-editor-visible {
+    display: inline !important;
+}
+
+.visual-ui-editor-image-upload-input{
+    border: 2px solid var(--background-modifier-border);
+    border-radius: 10px;
+    padding: 6px;
+}
+
+.visual-ui-editor-sub-container {
+    margin-left: 20px;
+    border-left: 1px dashed var(--background-modifier-border);
+    padding-left: 10px;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out, opacity 0.2s ease-out;
+    max-height: 0px;
+    opacity: 0;
+}
+
+/* 展开状态的类 */
+.visual-ui-editor-sub-container.is-expanded {
+    opacity: 1;
+    max-height: var(--visual-ui-editor-sub-container-height, 1000px);
+}
+
+.visual-ui-editor-drag-handle{
+    padding: 10px;
+    cursor: grab;
+    background-color: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    user-select: none;
+}
+
+.visual-ui-editor-drag-handle.is-dragging {
+    cursor: grabbing;
+}
+
+
+.visual-ui-editor-value-display-label{
+    cursor: pointer;
+    font-size: var(--font-smaller);
+    color: var(--text-muted);
+    border-bottom: 1px dashed var(--text-faint); /* 表示可点 */
+}
+
+.visual-ui-editor-value-input{
+    display: none;
+    width: 40px;
+    text-align: right;
+    font-size: var(--font-smaller);
+}
+
+
+
+.visual-ui-editor-important-status-text{
+    position: absolute;
+    top: 27px;
+    left: 0%;
+    font-weight: bold;
+    width: 100%;
+    text-align: center;
+    transform: translateY(-50%);
+    font-size: var(--font-smallest);
+    color: transparent;
+    transition: color 0.3s ease;
+}
+
+.visual-ui-editor-important-status-text.important {
+    color: var(--text-accent);
+}
+
+.visual-ui-editor-setting-name{
+    width: 60px;
+    max-height: 30px;
+    font-size: var(--font-smaller);
+    margin-right: 10px;
+}
+.visual-ui-editor-setting-desc{
+    width: 60px;
+    max-height: 50px;
+    font-size: var(--font-smallest);
+}
