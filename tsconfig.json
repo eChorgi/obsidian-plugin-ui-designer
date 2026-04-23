@@ -4,7 +4,7 @@
 		"inlineSourceMap": true,
 		"inlineSources": true,
 		"module": "ESNext",
-		"target": "ES6",
+		"target": "ESNext",
 		"allowJs": true,
 		"noImplicitAny": true,
 		"noImplicitThis": true,
@@ -21,7 +21,8 @@
 			"DOM",
 			"ES5",
 			"ES6",
-			"ES7"
+			"ES7",
+			"ESNext"
 		]
 	},
 	"include": [
