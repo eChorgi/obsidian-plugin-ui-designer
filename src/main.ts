@@ -297,25 +297,94 @@ class AttributeEditItem {
         else if (this.type === 'color') {
             // 1. 定义一个变量来存储组件实例
             let colorComponent: any; 
+            let sliderComponent: any;
 
+            // 1. 创建 UI 结构
+            const displayStack = this.setting.controlEl.createDiv({ cls: 'value-display-stack' });
+            const valueDisplay = displayStack.createEl('span', { text: `${this.orginValue}`, cls: 'value-display-label' });
+            const valueInput = displayStack.createEl('input', { type: 'text', cls: 'value-display-input' });
+            
+            // 初始样式设置
+            Object.assign(displayStack.style, { display: 'flex', alignItems: 'center', justifyContent: 'end', width: '70px', height: '16px' });
+            Object.assign(valueDisplay.style, { cursor: 'pointer', fontSize: 'var(--font-smaller)', color: 'var(--text-muted)', borderBottom: '1px dashed var(--text-faint)'});
+            Object.assign(valueInput.style, { display: 'none', border: 'none', maxWidth: '90px', textAlign: 'right', fontSize: 'var(--font-smaller)' });
+
+            
             this.setting.addColorPicker(color => {
                 colorComponent = color; // 将实例赋值给变量
                 color
                     .setValue(this.rgbToHex(this.orginValue))
-                    .onChange(value => {
-                        this.setProp(value);
+                    .onChange((value) => {
+                        console.log('Color changed:', value);
+                        updateAll(value, sliderComponent ? sliderComponent.value : 1, 'colorPicker');
                     });
             });
+
+            sliderComponent = this.setting.controlEl.createEl('input', {
+                type: 'range',
+                attr: { min: '0', max: '1', step: '0.01', value: '1' }
+            });
+            sliderComponent.addEventListener('input', () => {
+                updateAll(colorComponent.getValue(), parseFloat(sliderComponent.value), 'slider');
+            });
+
+            //添加一个显示当前颜色值的可编辑文本
+            
+
+            const updateAll = (color: string, alpha: number, sourse: 'colorPicker' | 'slider' | 'text' | 'none') => {
+                // alpha 转换为 0-255 范围的整数
+                const alphaInt = Math.round(alpha * 255);
+                const finalValue = `${color}${alphaInt.toString(16).padStart(2, '0')}`;
+                valueDisplay.textContent = finalValue;
+                if(sourse !== 'text')
+                    valueInput.value = finalValue;
+                    valueDisplay.textContent = finalValue;
+                if (sourse !== 'colorPicker' && colorComponent) {
+                    colorComponent.setValue(color);
+                }
+                
+                if (sourse !== 'slider' && sliderComponent) {
+                    sliderComponent.value = alpha;
+                }
+                this.setProp(finalValue); // 执行实际的 CSS 应用逻辑
+            };
+            valueDisplay.addEventListener('click', () => {
+                valueDisplay.style.display = 'none';
+                valueInput.style.display = 'inline';
+                valueInput.value = `${colorComponent.getValue()}${Math.round(parseFloat(sliderComponent.value) * 255).toString(16).padStart(2, '0')}`;
+                valueInput.focus();
+            });
+
+            // 3. 绑定输入框确认逻辑 (只绑定一次，不要写在 click 里面)
+            const handleConfirm = () => {
+                let val = valueInput.value;
+                //末尾补齐0到8位
+                val = String(valueInput.value).replace(/[^0-9a-fA-F]/g, '')
+                val = '#'+ val.padEnd(8, '0');
+                const color: string = val.slice(0, 7);
+                const opacity: string = val.slice(7, 9);
+                if (/^[0-9a-fA-F]{8}$/.test(val.slice(1))) {
+                    updateAll(color, parseInt(opacity, 16) / 255, 'text');
+                }
+                valueInput.style.display = 'none';
+                valueDisplay.style.display = 'inline';
+            };
+
+            valueInput.addEventListener('blur', handleConfirm);
+            valueInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') handleConfirm();
+                if (e.key === 'Escape') {
+                    valueInput.style.display = 'none';
+                    valueDisplay.style.display = 'inline';
+                }
+            });
+
             // 清空按钮
             this.setting.addExtraButton(btn => btn
                 .setIcon('cross')
                 .setTooltip('清空')
                 .onClick(() => {
-                    //指示器调为黑色
-                    if (colorComponent) {
-                        colorComponent.setValue('#00000000');
-                    }
-                    this.setProp('transparent');
+                    updateAll('#000000', 0, 'none');
                 })
             );
             this.setting.addExtraButton(btn => btn
@@ -324,12 +393,7 @@ class AttributeEditItem {
                 .onClick(() => {
                     // 应用原始样式
                     this.reset();
-
-                    // 2. 现在可以安全地访问 colorComponent 了
-                    if (colorComponent) {
-                        colorComponent.setValue(this.rgbToHex(this.orginValue));
-                    }
-                    
+                    updateAll(this.rgbToHex(this.orginValue), 1, 'none');
                     // new Notice(`已重置 ${this.name}`);
                 })
             );
