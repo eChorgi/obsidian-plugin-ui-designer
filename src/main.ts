@@ -1,4 +1,4 @@
-import { App, Plugin, Notice, Setting, ColorComponent } from 'obsidian';
+import { App, Plugin, Notice, Setting, ColorComponent, Modal } from 'obsidian';
 import { UISetting } from './types';
 
 export default class VisualUIEditorPlugin extends Plugin {
@@ -6,7 +6,7 @@ export default class VisualUIEditorPlugin extends Plugin {
     public addStyle (css: string): HTMLStyleElement {
         return this.addStyle(css);
     }
-    async onload() {
+    onload() {
         this.addRibbonIcon('target', '选择UI元素进行修改', () => {
             new MultiSelectorInstance(this.app, this);
         });
@@ -19,6 +19,88 @@ export default class VisualUIEditorPlugin extends Plugin {
     }
 }
 
+export class ConfirmModal extends Modal {
+    private isConfirmed = false;
+    private resolvePromise!: (value: boolean) => void;
+
+    constructor(app: App, private message: string) {
+        super(app);
+        // 添加命名空间和 macOS 风格类名
+        this.modalEl.addClass('visual-ui-editor');
+        this.modalEl.addClass('confirm-modal-mac');
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty(); // 清空默认边距干扰
+
+        // 1. 创建标题文本
+        contentEl.createEl('h2', { text: this.message });
+
+        // 2. 创建按钮容器
+        const buttonContainer = contentEl.createDiv({ cls: 'confirm-modal-buttons' });
+        
+        // 3. 确认按钮 (macOS 习惯：确认在右)
+        const confirmButton = buttonContainer.createEl('button', { 
+            text: '确认', 
+            cls: 'confirm-button-mac' 
+        });
+        
+        // 4. 取消按钮
+        const cancelButton = buttonContainer.createEl('button', { 
+            text: '取消', 
+            cls: 'cancel-button-mac' 
+        });
+
+        //删除默认关闭按钮
+        this.modalEl.querySelector('.modal-close-button')?.remove();
+        
+
+        // --- 事件绑定 ---
+
+        confirmButton.addEventListener('click', () => {
+            this.isConfirmed = true;
+            this.close();
+        });
+
+        cancelButton.addEventListener('click', () => {
+            this.close();
+        });
+
+        // 5. 辅助功能：自动聚焦确认按钮 & 支持回车键
+        confirmButton.focus();
+        this.scope.register([], 'Enter', (evt: KeyboardEvent) => {
+            if (!evt.isComposing) {
+                this.isConfirmed = true;
+                this.close();
+            }
+        });
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+        
+        // 只有在弹窗彻底关闭时，才 resolve Promise
+        // 确保无论是点击按钮关闭，还是点击背景/按 ESC 关闭，都能有返回值
+        if (this.resolvePromise) {
+            this.resolvePromise(this.isConfirmed);
+        }
+    }
+
+    /**
+     * 静态封装函数：像原生 confirm 一样异步调用
+     * @example const result = await ConfirmModal.confirm(app, "确定删除吗？");
+     */
+    public static confirm(app: App, message: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            const modal = new ConfirmModal(app, message);
+            modal.resolvePromise = resolve; // 将 resolve 传递给实例
+            modal.open();
+        });
+    }
+}
+
 class AttributeEditItem {
     constructor(
         public name: string,
@@ -27,7 +109,7 @@ class AttributeEditItem {
         public options: { min?: number; max?: number; step?: number; unit?: string; options?: string[]; optionsDisplay?: string[] ,default?: string} | undefined,
         private subs: UISetting[] = [],
         public on: string | undefined = undefined,
-        public also: string | undefined = undefined, // 关联属性（如 color 关联 -webkit-text-fill-color）
+        public also: string[] | undefined = undefined, // 关联属性（如 color 关联 -webkit-text-fill-color）
         public role: string | undefined = undefined, // 角色（如 'shorthand', 'part-x') 用于拼接属性值
         public previewEl: HTMLElement,
         public body: HTMLElement,
@@ -67,7 +149,9 @@ class AttributeEditItem {
     public exportCSS(isImportant: boolean = false): string {    
         let css = `${this.prop}: ${this.currentValue}${isImportant ? ' !important' : ''};\n`;
         if(this.also) {
-            css += `${this.also}: ${this.currentValue}${isImportant ? ' !important' : ''};\n`;
+            this.also.forEach(alsoProp => {
+                css += `${alsoProp}: ${this.currentValue}${isImportant ? ' !important' : ''};\n`;
+            });
         }
         if(this.currentValue === undefined || this.currentValue == this.orginValue || this.role?.startsWith('part')) css = '';
         this.subItems.forEach(sub => {
@@ -76,8 +160,26 @@ class AttributeEditItem {
         return css;
     }
 
+    private rgbToRgba(rgb: string, alpha: number): string {
+        const result = rgb.match(/\d+/g);
+        if (!result || result.length < 3) {
+            return `rgba(255, 255, 255, ${alpha})`; // 默认白色
+        }
+        const r = parseInt(result[0]);
+        //@ts-ignore
+        const g = parseInt(result[1]);
+        //@ts-ignore
+        const b = parseInt(result[2]);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
 
     private rgbToHex(rgb: string): string {
+        if(!rgb.startsWith("rgb")) {
+            if(rgb.startsWith("#") && (rgb.length === 7 || rgb.length === 9)) {
+                return rgb.slice(0, 7); // 如果不是 rgb 格式，直接返回原值
+            }
+            return rgb;
+        }
         // 匹配数字，如果没有匹配到，result 将会是 null
         const result = rgb.match(/\d+/g);
         
@@ -94,6 +196,59 @@ class AttributeEditItem {
         
         // 使用位运算转换为 Hex
         return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    }
+
+    private stringToRgba(color: string): string {
+        if(color.startsWith("rgb(")) {
+            return this.rgbToRgba(color, 1); // 转换为 rgba 格式并默认添加不透明度
+        }
+        else if(color.startsWith("#")) {
+            return this.hexToRgba(color); // 转换为 rgba 格式并默认添加不透明度
+        }
+        return color; // 其他格式直接返回
+    }
+
+    private hexToRgba(hex: string): string {
+        const result = hex.match(/\w\w/g);
+        if (!result || (result.length !== 3 && result.length !== 4)) {
+            return `rgba(255, 255, 255, 1)`; // 默认白色
+        }
+        const r = parseInt(result[0], 16);
+        //@ts-ignore
+        const g = parseInt(result[1], 16);
+        //@ts-ignore
+        const b = parseInt(result[2], 16);
+        //@ts-ignore
+        const a = result.length === 4 ? parseInt(result[3], 16) / 255 : 1;
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+
+    private stringToHex(color: string): string {
+        if(color.startsWith("rgba(")) {
+            return this.rgbaToHex(color); // 转换为 hex 格式
+        }
+        else if(color.startsWith("rgb(")) {
+            return this.rgbToHex(color); // 转换为 hex 格式
+        }
+        return color; // 其他格式直接返回
+    }
+
+    private rgbaToHex(rgba: string): string {
+        if(!rgba.startsWith("rgba(")) {
+            return rgba; // 如果不是 rgba 格式，直接返回原值
+        }
+        const result = rgba.match(/[\d.]+/g);
+        if (!result || result.length < 4) {
+            return '#ffffff00'; // 默认透明颜色
+        }
+        const r = parseInt(result[0]);
+        //@ts-ignore
+        const g = parseInt(result[1]);
+        //@ts-ignore
+        const b = parseInt(result[2]);
+        //@ts-ignore
+        const a = Math.round(parseFloat(result[3] * 255));
+        return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1) + a.toString(16).padStart(2, '0');
     }
 
     private async loadSystemFonts(selectEl: HTMLSelectElement) {
@@ -147,18 +302,22 @@ class AttributeEditItem {
     private applyShorthandValue(): string {
         if (this.role === 'shorthand') {
             const partMap: Map<number, string> = new Map();
+            let num = 0;
+            let count = 0;
             this.subItems.forEach(sub => {
                 if (sub.role?.startsWith('part-')) {
                     const index = parseInt(sub.role.split('-')[1] ?? '-1');
                     if(index == -1)
                         throw new Error(`Invalid shorthand part role: ${sub.role}`);
-
+                    
+                    num++;
                     let value = sub.currentValue;
                     if(value === undefined) {
                         if(sub.options?.default === undefined) {
                             throw new Error(`Missing value for ${sub.name} and no default provided.`);
                         }
                         value = sub.options?.default;
+                        count++;
                     }
 
                     partMap.set(index, value);
@@ -169,7 +328,10 @@ class AttributeEditItem {
             array.forEach(([_, value]) => {
                 finalValue += value + ' ';
             });
-            this.setProp(finalValue.trim());
+            if(count === num) {
+                finalValue = this.orginValue;
+            }
+                this.setProp(finalValue.trim());
             if (this.type==='text') {
                 // this.valueDisplay.textContent = finalValue.trim();
                 this.inputEl.value = finalValue.trim();
@@ -183,9 +345,6 @@ class AttributeEditItem {
 
                     if(sub.currentValue !== undefined) {
                         let value = `${sub.prop}(${sub.currentValue})`;
-                        if(sub.options?.default !== undefined) {
-                            value = `${sub.prop}(${sub.options?.default})`; 
-                        }   
                         parts.push(value);
                     }
                 }
@@ -194,6 +353,9 @@ class AttributeEditItem {
             parts.forEach(value => {
                 finalValue += value + ' ';
             });
+            if(finalValue.trim() === '') {
+                finalValue = this.orginValue;
+            }
             this.setProp(finalValue.trim());
             if (this.type==='text') {
                 // this.valueDisplay.textContent = finalValue.trim();
@@ -207,12 +369,17 @@ class AttributeEditItem {
 
     private setProp(value: string) {
         this.currentValue = value;
+        if(this.currentValue === this.orginValue) {
+            this.currentValue = undefined; // 如果值与原始值相同，则视为未修改
+        }
         if (this.role?.startsWith('part')) {
             this.parentItem?.applyShorthandValue(); // 更新父属性的值
         }
         this.previewEl.style.setProperty(this.prop, value, 'important');
         if (this.also) {
-            this.previewEl.style.setProperty(this.also, value, 'important');
+            this.also.forEach(alsoProp => {
+                this.previewEl.style.setProperty(alsoProp, value, 'important');
+            });
         }
         if(this.onUpdate) {
             this.onUpdate();
@@ -226,10 +393,12 @@ class AttributeEditItem {
                 item.reset();
             });
         }
-        if(this.currentValue === undefined) return;
+        // if(this.name === "颜色")
+        //     debugger
+        // console.log(`Resetting ${this.name} to original value: ${this.orginValue}`);
+        this.onReset?.();
         this.setProp(this.orginValue);
         this.currentValue = undefined;
-        this.onReset?.();
     }
     public addListenerOnUpdate(callback: () => void) {
         this.onUpdate = callback;
@@ -238,9 +407,28 @@ class AttributeEditItem {
         });
     }
 
+    public rebind(style: CSSStyleDeclaration, newPreviewEl: HTMLElement) {
+        if(this.subItems.length > 0) {
+            // 递归重置子属性
+            this.subItems.forEach(item => {
+                item.rebind(style, newPreviewEl);
+            });
+        }
+        this.previewEl = newPreviewEl;
+        this.computedStyle = style;
+        this.orginValue = this.computedStyle.getPropertyValue(this.prop).trim();
+        // console.log(`Rebinding ${this.name}: new origin value is ${this.orginValue}`);
+        this.reset();
+    }
+
     public createElement() {
         this.setting = new Setting(this.body).setName(this.name);
         this.orginValue = this.computedStyle.getPropertyValue(this.prop).trim();
+        this.orginValue = this.stringToRgba(this.orginValue);
+
+        if(this.orginValue === '') {
+            this.orginValue = this.options?.default ?? '';
+        }
         if (this.type === 'slider') {
             const numericValue = parseFloat(this.orginValue) || 0;
             const unit = this.options?.unit ?? '';
@@ -274,6 +462,7 @@ class AttributeEditItem {
 
             // 2. 绑定点击切换逻辑 (仅负责显示隐藏)
             valueDisplay.addEventListener('click', () => {
+                valueDisplay.classList.remove('visual-ui-editor-visible');
                 valueDisplay.classList.add('visual-ui-editor-hidden');
                 valueInput.classList.remove('visual-ui-editor-hidden');
                 valueInput.classList.add('visual-ui-editor-visible');
@@ -336,9 +525,14 @@ class AttributeEditItem {
             this.setting.addColorPicker(color => {
                 colorComponent = color; // 将实例赋值给变量
                 color
-                    .setValue(this.rgbToHex(this.orginValue))
+                    .setValue(this.stringToHex(this.orginValue))
                     .onChange((value) => {
-                        updateAll(value, sliderComponent ? +sliderComponent.value : 1, 'colorPicker');
+                        let hex = value;
+                        if(sliderComponent) {
+                            const alpha = Math.round(parseFloat(sliderComponent.value) * 255).toString(16).padStart(2, '0');
+                            hex += alpha;
+                        }
+                        updateAll(hex, 'colorPicker');
                     });
             });
 
@@ -347,33 +541,36 @@ class AttributeEditItem {
                 attr: { min: '0', max: '1', step: '0.01', value: '1' }
             });
             sliderComponent.addEventListener('input', () => {
-                updateAll(colorComponent.getValue(), parseFloat(sliderComponent.value), 'slider');
+                let hex = colorComponent.getValue();
+                const alpha = Math.round(parseFloat(sliderComponent.value) * 255).toString(16).padStart(2, '0');
+                hex += alpha;
+                updateAll(hex, 'slider');
             });
 
             //添加一个显示当前颜色值的可编辑文本
             
 
-            const updateAll = (color: string, alpha: number, sourse: 'colorPicker' | 'slider' | 'text' | 'none') => {
-                // alpha 转换为 0-255 范围的整数
-                const alphaInt = Math.round(alpha * 255);
-                const finalValue = `${color}${alphaInt.toString(16).padStart(2, '0')}`;
-                valueDisplay.textContent = finalValue;
-                if(sourse !== 'text')
-                    valueInput.value = finalValue;
-                    valueDisplay.textContent = finalValue;
-                if (sourse !== 'colorPicker' && colorComponent != undefined) {
-                    colorComponent.setValue(color);
+            const updateAll = (color: string, sourse: 'colorPicker' | 'slider' | 'text' | 'none') => {
+                const hexColor = this.stringToHex(color);
+                const rgbaColor = this.stringToRgba(color);
+                const alpha = hexColor.length === 9 ? parseInt(hexColor.slice(7, 9), 16) / 255 : 1;
+                valueDisplay.textContent = hexColor;
+                if(sourse !== 'text'){
+                    valueInput.value = hexColor;
                 }
-                
                 if (sourse !== 'slider' && sliderComponent) {
                     sliderComponent.value = String(alpha);
                 }
-                this.setProp(finalValue); // 执行实际的 CSS 应用逻辑
+                if (sourse !== 'colorPicker' && colorComponent != undefined) {
+                    colorComponent.setValue(hexColor.slice(0, 7));
+                }
+                this.setProp(rgbaColor); // 执行实际的 CSS 应用逻辑
             };
             this.onReset = () => {
-                updateAll(this.rgbToHex(this.orginValue), 1, 'none');
+                updateAll(this.orginValue, 'none');
             };
             valueDisplay.addEventListener('click', () => {
+                valueDisplay.classList.remove('visual-ui-editor-visible');
                 valueDisplay.classList.add('visual-ui-editor-hidden');
                 valueInput.classList.remove('visual-ui-editor-hidden');
                 valueInput.classList.add('visual-ui-editor-visible');
@@ -385,13 +582,12 @@ class AttributeEditItem {
             const handleConfirm = () => {
                 let val = valueInput.value;
                 //末尾补齐0到8位
-                val = String(valueInput.value).replace(/[^0-9a-fA-F]/g, '')
-                val = '#'+ val.padEnd(8, '0');
-                const color: string = val.slice(0, 7);
-                const opacity: string = val.slice(7, 9);
-                if (/^[0-9a-fA-F]{8}$/.test(val.slice(1))) {
-                    updateAll(color, parseInt(opacity, 16) / 255, 'text');
+                if(val.startsWith("#")) {
+                    val = String(valueInput.value).replace(/[^0-9a-fA-F]/g, '')
+                    val = '#'+ val.padEnd(8, '0');
                 }
+
+                updateAll(val, 'text');
                 valueInput.classList.remove('visual-ui-editor-visible');
                 valueInput.classList.add('visual-ui-editor-hidden');
                 valueDisplay.classList.remove('visual-ui-editor-hidden');
@@ -414,7 +610,7 @@ class AttributeEditItem {
                 .setIcon('cross')
                 .setTooltip('清空')
                 .onClick(() => {
-                    updateAll('#000000', 0, 'none');
+                    updateAll('rgba(0, 0, 0, 0)', 'none');
                 })
             );
             this.setting.addExtraButton(btn => btn
@@ -426,6 +622,7 @@ class AttributeEditItem {
                     // new Notice(`已重置 ${this.name}`);
                 })
             );
+            updateAll(this.orginValue, 'none'); // 初始化显示
         }
         else if (this.type === 'font') {
             //显示提示文本
@@ -456,6 +653,17 @@ class AttributeEditItem {
                 // 这里可以保存配置
             });
 
+            this.onReset = () => {
+                selectEl.value = '';
+            }
+            //添加重置按钮
+            this.setting.addExtraButton(btn => btn
+                .setIcon('reset')
+                .onClick(() => {
+                    this.reset();
+                })
+            );
+
         }
         else if (this.type === 'select') {
             const selectEl = this.setting.controlEl.createEl('select');
@@ -464,10 +672,31 @@ class AttributeEditItem {
                 option.value = opt;
                 option.textContent = (this.options?.optionsDisplay ? this.options.optionsDisplay[idx] : opt)??null;
             });
+
             selectEl.value = this.orginValue;
+            if(selectEl.value === '') {
+                const option = selectEl.createEl('option');
+                option.value = '';
+                option.textContent = this.orginValue;
+                option.selected = true;
+            }
+            this.onReset = () => {
+                selectEl.value = '';
+            }
             selectEl.addEventListener('change', () => {
+                if(selectEl.value === '') {
+                    this.setProp(this.orginValue);
+                    return;
+                }
                 this.setProp(selectEl.value);
             });
+            //添加重置按钮
+            this.setting.addExtraButton(btn => btn
+                .setIcon('reset')
+                .onClick(() => {
+                    this.reset();
+                })
+            );
         }
         else if (this.type === 'text') {
             this.inputEl = this.setting.controlEl.createEl('input', { type: 'text' });
@@ -475,6 +704,13 @@ class AttributeEditItem {
             this.inputEl.addEventListener(this.on ?? 'input', () => {
                 this.setProp(this.inputEl.value);
             });
+            //添加重置按钮
+            this.setting.addExtraButton(btn => btn
+                .setIcon('reset')
+                .onClick(() => {
+                    this.reset();
+                })
+            );
         }
         else if (this.type === 'image-upload') {
             const fileInput = this.setting.controlEl.createEl('input', { type: 'file', cls: 'ui-designer-image-upload-input' });
@@ -515,8 +751,15 @@ class AttributeEditItem {
                     const height = el.scrollHeight;
                     el.style.setProperty('--visual-ui-editor-sub-container-height', `${height}px`);
                     el.classList.add('is-expanded');
+                    //展开完成后将高度设置为 none，允许其根据内容自动调整高度
+                    setTimeout(() => {
+                        el.style.setProperty('--visual-ui-editor-sub-container-height', `${10000000000}px`);
+                    }, 300);
+
                     btn.setIcon('chevron-down');
                 } else {
+                    // el.style.setProperty('--visual-ui-editor-sub-container-height', `${0}px`);
+                    // el.classList.remove('expanded');
                     el.classList.remove('is-expanded');
                     btn.setIcon('chevron-right');
                 }
@@ -540,7 +783,6 @@ class AttributeEditItem {
     }
 }
 
-// 1. 不再继承 Modal，因为它会自带遮罩和居中逻辑
 class CSSInspectorFloatingPanel{
     constructor(
         private app: App, 
@@ -560,6 +802,7 @@ class CSSInspectorFloatingPanel{
     private selectorHint!: HTMLDivElement; // 显示当前选择器的提示元素
     private styleEl!: HTMLStyleElement; // 用于注入样式的 <style> 标签
     private isImportant: boolean = false; // 是否使用 !important 来提高优先级
+    private target_style!: CSSStyleDeclaration; // 当前元素的计算样式对象
     get pseudo() {
         return this.selectorInstance.pseudo;
     }
@@ -595,6 +838,39 @@ class CSSInspectorFloatingPanel{
         css = css.replace(/;\n/g, ';\n\t').replace(/\t}/g, '}');
         return css;
     }
+    
+    private async forceRefreshStyles() {
+        const getStyleSnapshot = (el: HTMLElement) => {
+            const styles = window.getComputedStyle(el);
+            const snapshot: Record<string, string> = {};
+            
+            // 遍历所有样式键名
+            // 注意：CSSStyleDeclaration 是类数组对象，可以直接遍历
+            for (let i = 0; i < styles.length; i++) {
+                const key = styles[i];
+                if(key === undefined) continue;
+                snapshot[key] = styles.getPropertyValue(key);
+            }
+            return JSON.stringify(snapshot);
+        };
+        await this.app.customCss.readSnippets();
+        
+        // 轮询检查样式表是否已更新，设置最大重试次数
+        let attempts = 0;
+        const oldStyle = getStyleSnapshot(this.targetEl);
+        while (attempts < 100) {
+            // 尝试获取最新的 computedStyle
+            const current = getStyleSnapshot(this.targetEl);
+            if (current === oldStyle) {
+                await new Promise(resolve => setTimeout(resolve, 100)); 
+                attempts++;
+            }
+            else {
+                // console.log('Styles updated successfully after', attempts, 'attempts');
+                break;
+            }
+        }
+    }
     private initUI() {
         // 创建主面板
         this.el = document.createElement('div');
@@ -619,8 +895,8 @@ class CSSInspectorFloatingPanel{
 
         // --- 拖拽手柄 ---
         const handle = this.el.createDiv({ cls: 'visual-ui-editor-drag-handle' });
-        handle.textContent = '⋮ UI 样式修改器';
-
+        handle.textContent = '⋮ UI 样式修改器11';
+        handle.classList.add('visual-ui-editor-title')
         // 拖拽逻辑 (使用箭头函数自动绑定 this)
         handle.onmousedown = (e) => {
             this.isDragging = true;
@@ -788,7 +1064,7 @@ class CSSInspectorFloatingPanel{
             overflow: 'auto',   /* 如果你不希望它捅破边界，加这一行 */
         });
 
-        const target_style = window.getComputedStyle(this.targetEl);
+        this.target_style = window.getComputedStyle(this.targetEl);
         if(this.pseudo) {
             //增加上面居中提示选中了伪元素
             const hint = this.el.createDiv({ cls: 'preview-hint' });
@@ -855,19 +1131,18 @@ class CSSInspectorFloatingPanel{
         }
         else{
             this.previewEl = this.targetEl.cloneNode(true) as HTMLElement;   
-            for (const key of target_style) {
+            for (const key of this.target_style) {
                 this.previewEl.style.setProperty(
                     key, 
-                    target_style.getPropertyValue(key), 
-                    target_style.getPropertyPriority(key) 
+                    this.target_style.getPropertyValue(key), 
+                    this.target_style.getPropertyPriority(key) 
                 );
             }
         }
 
         
         elementPreviewContainer.appendChild(this.previewEl);
-        // --- 属性编辑区 ---5DCAF-8C298-60784-72AB2
-        // 注意：如果你在非 Modal 类里使用 Setting，需要传入 HTMLElement
+        // --- 属性编辑区 ---
         const props: UISetting[] = [
             { name: '背景', prop: 'background', type: 'text',
                 subs: [
@@ -882,7 +1157,7 @@ class CSSInspectorFloatingPanel{
                     { name: '背景裁剪', prop: 'background-clip', type: 'select', options: ['border-box', 'padding-box', 'content-box'], optionsDisplay: ['边框区', '内边距区', '内容区'] },
                 ]
             },
-            { name: '颜色', prop: 'color', type: 'color', also: '-webkit-text-fill-color' },
+            { name: '颜色', prop: 'color', type: 'color', also: ['-webkit-text-fill-color', '-webkit-text-stroke-color'] },
             { name: '透明度', prop: 'opacity', type: 'slider', min: 0, max: 1, step: 0.1, unit: '' },
             { name: '字体', prop: 'font-family', type: 'font' ,
                 subs: [
@@ -892,7 +1167,7 @@ class CSSInspectorFloatingPanel{
                     { name: '字体粗细', prop: 'font-weight', type: 'select', options: ['normal', 'bold', 'bolder', 'lighter'], optionsDisplay: ['正常', '加粗', '超粗', '细'] },
                     { name: '行高', prop: 'line-height', type: 'slider', min: 1, max: 3, step: 0.1, unit: '' },
                     { name: '字间距', prop: 'letter-spacing', type: 'slider', min: -5, max: 20, unit: 'px' },
-                    { name: '文字对齐', prop: 'text-align', type: 'select', options: ['left', 'right', 'center', 'justify'], optionsDisplay: ['左对齐', '右对齐', '居中对齐', '两端对齐'] },
+                    { name: '文字对齐', prop: 'text-align', type: 'select', options: ['left', 'right', 'center', 'justify','start','end','match-parent'], optionsDisplay: ['左对齐', '右对齐', '居中对齐', '两端对齐', '起始位置', '末尾位置', '匹配父元素'] },
                     { name: '装饰线', prop: 'text-decoration', type: 'text', 
                         subs: [
                             { name: '线条', prop: 'text-decoration-line', type: 'select', options: ['none', 'underline', 'overline', 'line-through'], optionsDisplay: ['无', '下划线', '上划线', '删除线'] },
@@ -906,7 +1181,7 @@ class CSSInspectorFloatingPanel{
                     },
                     { name: '文字换行', prop: 'white-space', type: 'select', options: ['normal', 'nowrap', 'pre', 'pre-wrap', 'pre-line'], optionsDisplay: ['正常', '不换行', '保留空白', '保留空白并换行', '合并空白并换行']},
                     { name: '文本溢出处理', prop: 'text-overflow', type: 'select',options: ['clip', 'ellipsis'],optionsDisplay: ['裁剪', '省略号']},
-                    { name: '文本阴影',role: 'shorthand', prop: 'text-shadow', type: 'text',
+                    { name: '文本阴影', default:'', role: 'shorthand', prop: 'text-shadow', type: 'text',
                         subs: [
                             { name: '水平偏移',role: 'part-1', default: "0px", prop: '', type: 'slider', min: -20, max: 20, unit: 'px' },
                             { name: '垂直偏移',role: 'part-2', default: "0px", prop: '', type: 'slider', min: -20, max: 20, unit: 'px' },
@@ -984,8 +1259,8 @@ class CSSInspectorFloatingPanel{
                     { name: '布局', prop: 'display', type: 'select', options: ['block', 'inline-block', 'inline', 'flex', 'inline-flex', 'grid', 'inline-grid'], optionsDisplay: ['块级', '行内块', '行内', '弹性布局', '行内弹性布局', '网格布局', '行内网格布局'],
                         subs: [
                             { name: '弹性方向', prop: 'flex-direction', type: 'select', options: ['row', 'row-reverse', 'column', 'column-reverse'], optionsDisplay: ['横向', '横向反序', '纵向', '纵向反序'] },
-                            { name: '主轴对齐方式', prop: 'justify-content', type: 'select', options: ['flex-start', 'flex-end', 'center', 'space-between', 'space-around'], optionsDisplay: ['起点对齐', '终点对齐', '居中', '两端对齐', '环绕对齐'] },
-                            { name: '交叉轴对齐方式', prop: 'align-items', type: 'select', options: ['stretch', 'flex-start', 'flex-end', 'center'], optionsDisplay: ['拉伸填满', '起点对齐', '终点对齐', '居中'] },
+                            { name: '主轴对齐方式', prop: 'justify-content', type: 'select', options: ['flex-start', 'flex-end', 'center', 'space-between', 'space-around', 'space-evenly', 'stretch', 'start', 'end', 'left', 'right'], optionsDisplay: ['起点对齐', '终点对齐', '居中', '两端对齐', '环绕对齐', '平均对齐', '拉伸填满', '起始位置对齐', '末尾位置对齐', '左对齐', '右对齐'] },
+                            { name: '交叉轴对齐方式', prop: 'align-items', type: 'select', options: ['stretch', 'flex-start', 'flex-end', 'center', 'baseline', 'start', 'end', 'self-start', 'self-end'], optionsDisplay: ['拉伸填满', '起点对齐', '终点对齐', '居中', '基线对齐', '起始位置对齐', '末尾位置对齐', '自身起始位置对齐', '自身末尾位置对齐'] },
                             { name: '换行', prop: 'flex-wrap', type: 'select', options: ['nowrap', 'wrap', 'wrap-reverse'], optionsDisplay: ['不换行', '换行', '反向换行'] },
                             
                             { name: '网格列数', on:'block', prop: 'grid-template-columns', type: 'text' },
@@ -1010,7 +1285,7 @@ class CSSInspectorFloatingPanel{
                     },
                     { name: '滤镜&特效', prop: '', type: 'none',
                         subs: [
-                            { name: '阴影', role:'shorthand', prop: 'box-shadow', type: 'text',
+                            { name: '阴影', default:'', role:'shorthand', prop: 'box-shadow', type: 'text',
                                 subs: [
                                     { name: '水平偏移', role:'part-1',default: "0px", prop: '', type: 'slider', min: -20, max: 20, unit: 'px'},
                                     { name: '垂直偏移', role:'part-2',default: "0px", prop: '', type: 'slider', min: -20, max: 20, unit: 'px'},
@@ -1018,24 +1293,24 @@ class CSSInspectorFloatingPanel{
                                     { name: '阴影颜色', role:'part-4',default: "rgba(0, 0, 0, 0.5)", prop: '', type: 'color'},
                                 ]
                             },
-                            { name: '前景', role:'functionalNotion', prop: 'filter', type: 'text' ,
+                            { name: '前景', default:'', role:'functionalNotion', prop: 'filter', type: 'text' ,
                                 subs: [
-                                    { name: '模糊',role:'part', prop: 'blur', type: 'slider', min: 0, max: 20, unit: 'px' },
-                                    { name: '亮度',role:'part', prop: 'brightness', type: 'slider', min: 0, max: 200, unit: '%' },
-                                    { name: '对比度',role:'part', prop: 'contrast', type: 'slider', min: 0, max: 200, unit: '%' },
-                                    { name: '灰度',role:'part', prop: 'grayscale', type: 'slider', min: 0, max: 100, unit: '%' },
-                                    { name: '反转',role:'part', prop: 'invert', type: 'slider', min: 0, max: 100, unit: '%' },
-                                    { name: '饱和度',role:'part', prop: 'saturate', type: 'slider', min: 0, max: 200, unit: '%' },
+                                    { name: '模糊',role:'part',default: "0px", prop: 'blur', type: 'slider', min: 0, max: 20, unit: 'px' },
+                                    { name: '亮度',role:'part',default: "100%", prop: 'brightness', type: 'slider', min: 0, max: 200, unit: '%' },
+                                    { name: '对比度',role:'part',default: "100%", prop: 'contrast', type: 'slider', min: 0, max: 200, unit: '%' },
+                                    { name: '灰度',role:'part',default: "0%", prop: 'grayscale', type: 'slider', min: 0, max: 100, unit: '%' },
+                                    { name: '反转',role:'part',default: "0%", prop: 'invert', type: 'slider', min: 0, max: 100, unit: '%' },
+                                    { name: '饱和度',role:'part',default: "100%", prop: 'saturate', type: 'slider', min: 0, max: 200, unit: '%' },
                                 ]
                             },
-                            { name: '背景', role:'functionalNotion', prop: 'backdrop-filter', type: 'text' ,
+                            { name: '背景', default:'', role:'functionalNotion', prop: 'backdrop-filter', type: 'text' ,
                                 subs: [
-                                    { name: '模糊',role:'part', prop: 'blur', type: 'slider', min: 0, max: 20, unit: 'px' },
-                                    { name: '亮度',role:'part', prop: 'brightness', type: 'slider', min: 0, max: 200, unit: '%' },
-                                    { name: '对比度',role:'part', prop: 'contrast', type: 'slider', min: 0, max: 200, unit: '%' },
-                                    { name: '灰度',role:'part', prop: 'grayscale', type: 'slider', min: 0, max: 100, unit: '%' },
-                                    { name: '反转',role:'part', prop: 'invert', type: 'slider', min: 0, max: 100, unit: '%' },
-                                    { name: '饱和度',role:'part', prop: 'saturate', type: 'slider', min: 0, max: 200, unit: '%' },
+                                    { name: '模糊',role:'part',default: "0px", prop: 'blur', type: 'slider', min: 0, max: 20, unit: 'px' },
+                                    { name: '亮度',role:'part',default: "100%", prop: 'brightness', type: 'slider', min: 0, max: 200, unit: '%' },
+                                    { name: '对比度',role:'part',default: "100%", prop: 'contrast', type: 'slider', min: 0, max: 200, unit: '%' },
+                                    { name: '灰度',role:'part',default: "0%", prop: 'grayscale', type: 'slider', min: 0, max: 100, unit: '%' },
+                                    { name: '反转',role:'part',default: "0%", prop: 'invert', type: 'slider', min: 0, max: 100, unit: '%' },
+                                    { name: '饱和度',role:'part',default: "100%", prop: 'saturate', type: 'slider', min: 0, max: 200, unit: '%' },
                                 ]
                             },
                         ]
@@ -1063,7 +1338,7 @@ class CSSInspectorFloatingPanel{
             p.role,
             this.previewEl, 
             bottomColumn,
-            target_style
+            this.target_style
         ));
         
 
@@ -1184,6 +1459,7 @@ class CSSInspectorFloatingPanel{
 
                 // 6. 绑定点击切换逻辑
                 valueDisplay.addEventListener('click', () => {
+                    valueDisplay.classList.remove('visual-ui-editor-visible');
                     valueDisplay.classList.add('visual-ui-editor-hidden');
                     valueInput.classList.remove('visual-ui-editor-hidden');
                     valueInput.classList.add('visual-ui-editor-visible');
@@ -1239,60 +1515,97 @@ class CSSInspectorFloatingPanel{
             })
             
             .addButton(btn => btn
-            .setButtonText('抹除样式')
-            .setWarning()
-            .setTooltip('抹除所有该元素设置过的历史样式，恢复到未设置状态')
-            .onClick(async () => {
-                //弹出确认框
-                // eslint-disable-next-line no-alert
-                if (confirm('确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！')) {
-                    //读取css文件，删除所有包含该选择器的样式
-                    const snippetsPath = this.app.vault.configDir + '/snippets';
-                    const tempName = `--ui-designer-${this.app.vault.getName()}-temp`;
-                    const tempFile = `${snippetsPath}/${tempName}.css`;
-                    await this.app.vault.adapter.exists(tempFile).then(async exists => {
-                        if (exists) {
-                            await this.app.vault.adapter.read(tempFile).then(async content => {
-                                //匹配选择器及其样式块的正则表达式，支持多行和嵌套大括号
-                                const regex = new RegExp(`${this.selector}\\s*{[^{}]*}`, 'g');
-                                const newContent = content.replace(regex, '');
-                                await this.app.vault.adapter.write(tempFile, newContent).then(async () => {
-                                    await this.app.customCss.readSnippets().then(() => {
-                                        elementPreviewContainer.appendChild(this.previewEl);
-                                    });
+                .setButtonText('抹除样式')
+                .setWarning()
+                .setTooltip('抹除所有该元素设置过的历史样式，恢复到未设置状态')
+                .onClick(async () => {
+                    //弹出确认框
+                    // new ConfirmModal(this.app, '确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！', async () => {
+                    //禁用no-alert规则，使用window.confirm替代Obsidian的ConfirmModal，以支持多行文本显示
+
+                    if(await ConfirmModal.confirm(this.app, '确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！')){
+                    // if(confirm('确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！')) {
+                    // window.confirm('确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！').then(async () => {
+                        //读取css文件，删除所有包含该选择器的样式
+                        let needRefresh = false;
+                        const snippetsPath = this.app.vault.configDir + '/snippets';
+                        const tempName = `--ui-designer-${this.app.vault.getName()}-temp`;
+                        const tempFile = `${snippetsPath}/${tempName}.css`;
+                        await this.app.vault.adapter.exists(tempFile).then(async exists => {
+                            if (exists) {
+                                await this.app.vault.adapter.read(tempFile).then(async content => {
+                                    //匹配选择器及其样式块的正则表达式，支持多行和嵌套大括号
+                                    const regex = new RegExp(`${this.selector}\\s*{[^{}]*}\n*`, 'g');
+                                    //检测有没有匹配项
+                                    
+                                    //匹配两行以及以上的空行，并替换为一行
+                                    
+                                    if(regex.test(content)) {
+                                        needRefresh = true;
+                                        const newContent = content.replace(regex, '');
+                                        const emptyLinesRegex = /\n{2,}/g;
+                                        const finalContent = newContent.replace(emptyLinesRegex, '\n\n');
+                                        await this.app.vault.adapter.write(tempFile, finalContent).then(async () => {
+                                            await this.app.customCss.readSnippets().then(() => {
+                                                needRefresh = true;
+                                            });
+                                        });
+                                    }
                                 });
-                            });
-                        }
-                    });
-                    const snippetName = `--ui-designer-${this.app.vault.getName()}-default`;
-                    const snippetFile = `${snippetsPath}/${snippetName}.css`;
-                    await this.app.vault.adapter.read(snippetFile).then(async content => {
-                        //匹配选择器及其样式块的正则表达式，支持多行和嵌套大括号
-                        const regex = new RegExp(`${this.selector}\\s*{[^{}]*}`, 'g');
-                        const newContent = content.replace(regex, '');
-                        await this.app.vault.adapter.write(snippetFile, newContent).then(async () => {
-                            // 刷新 Snippets 列表
-
-                            await this.app.customCss.readSnippets().then(() => {
-                                new Notice('✅已抹除该元素的历史样式');
-                                elementPreviewContainer.appendChild(this.previewEl);
-
-                            });
-                            //重新加载预览窗口元素
-                            this.attributeEditors.forEach(editor => {editor.reset()});
-
+                            }
                         });
-                    });
-                }
-            })
+                        const snippetName = `--ui-designer-${this.app.vault.getName()}-default`;
+                        const snippetFile = `${snippetsPath}/${snippetName}.css`;
+                        await this.app.vault.adapter.read(snippetFile).then(async content => {
+                            //匹配选择器及其样式块的正则表达式，支持多行和嵌套大括号
+                            const regex = new RegExp(`${this.selector}\\s*{[^{}]*}\n*`, 'g');
+                            if(regex.test(content)) {
+                                needRefresh = true;
+                            }
+                            const newContent = content.replace(regex, '');
+                            const emptyLinesRegex = /\n{2,}/g;
+                            const finalContent = newContent.replace(emptyLinesRegex, '\n\n');
+                            await this.app.vault.adapter.write(snippetFile, finalContent).then(async () => {
+                                // 刷新 Snippets 列表
+                                if (needRefresh) {
+                                    await this.forceRefreshStyles();
+
+                                    new Notice('✅已抹除该元素的历史样式');
+                                    this.target_style = window.getComputedStyle(this.targetEl);
+                                    this.previewEl.remove();
+                                    this.previewEl = this.targetEl.cloneNode(true) as HTMLElement;
+                                    elementPreviewContainer.appendChild(this.previewEl);
+                                    this.attributeEditors.forEach(editor => {editor.rebind(this.target_style, this.previewEl)});
+
+                                    //应用样式
+                                    for (const key of this.target_style) {
+                                    this.previewEl.style.setProperty(
+                                        key, 
+                                        this.target_style.getPropertyValue(key), 
+                                        this.target_style.getPropertyPriority(key) 
+                                    );
+                                    }
+                                }
+                                else {
+                                    new Notice('✅没有发现该元素的历史样式');
+                                    elementPreviewContainer.appendChild(this.previewEl);
+                                    // previewContainer.
+                                }
+                            });
+                        });
+
+                        
+                    }
+                })
             )
             .addButton(btn => btn
             .setButtonText('重置')
             .setTooltip('重置此次编辑的所有样式')
             .onClick(async () => {
                 //弹出确认框
-                // eslint-disable-next-line no-alert
-                if (confirm('确定要重置本次打开面板以来编辑的所有样式吗？历史样式将会保留')) {
+                // new ConfirmModal(this.app, '确定要重置本次打开面板以来编辑的所有样式吗？历史样式将会保留', async () => {
+                //
+                if(await ConfirmModal.confirm(this.app, '确定要重置本次打开面板以来编辑的所有样式吗？历史样式将会保留')) {
                     this.attributeEditors.forEach(editor => editor.reset());
                     this.style = '';
                     this.selectorHint.textContent = `[@selector]/ 点击复制选择器\n${this.selector}\n`;
@@ -1302,23 +1615,16 @@ class CSSInspectorFloatingPanel{
                     const snippetFile = `${snippetsPath}/${snippetName}.css`;
                     await this.app.vault.adapter.exists(snippetFile).then(async exists => {
                         if (exists) {
-                            await this.app.vault.adapter.remove(snippetFile).then(async () => {
+                                await this.app.vault.adapter.remove(snippetFile).then(async () => {
                                 // 刷新 Snippets 列表
-                               await  this.app.customCss.readSnippets().then(() => {
-                                    new Notice('✅已重置本次编辑的样式');
-                                    //重置preview窗口元素
-                                    // const target_style = window.getComputedStyle(this.targetEl);
-                                    // this.previewEl.remove();
-                                    // this.previewEl = this.targetEl.cloneNode(true) as HTMLElement;   
-                                    // for (const key of target_style) {
-                                    //     this.previewEl.style.setProperty(
-                                    //         key, 
-                                    //         target_style.getPropertyValue(key), 
-                                    //         target_style.getPropertyPriority(key) 
-                                    //     );
-                                    // }
-                                    elementPreviewContainer.appendChild(this.previewEl);
-                                });
+                                await this.forceRefreshStyles();
+
+                                new Notice('✅已重置本次编辑的样式');
+                                this.target_style = window.getComputedStyle(this.targetEl);
+                                this.attributeEditors.forEach(editor => {editor.rebind(this.target_style, this.previewEl)});
+                                this.previewEl.remove();
+                                this.previewEl = this.targetEl.cloneNode(true) as HTMLElement;
+                                elementPreviewContainer.appendChild(this.previewEl);
                             });
                         }
                     });
@@ -1340,7 +1646,7 @@ class CSSInspectorFloatingPanel{
                 const snippetName = `--ui-designer-${this.app.vault.getName()}-temp`;
                 const snippetFile = `${snippetsPath}/${snippetName}.css`;
                 let content = '';
-                content = '/* -- This file is generated by the ui-designer plugin automatically -- */\n';
+                content = '/* -- This file is generated by the visual-ui-editor plugin automatically -- */\n';
 
                 const cssContent = `${content}\n${css}`;
 
@@ -1385,7 +1691,7 @@ class CSSInspectorFloatingPanel{
                     content = await this.app.vault.adapter.read(snippetFile).catch(() => '');
                 }
                 else {
-                    content = '/* -- This file is generated by the ui-designer plugin automatically -- */\n';
+                    content = '/* -- This file is generated by the visual-ui-editor plugin automatically -- */\n';
                 }
                 const cssContent = `${content}\n${css}`;
 
@@ -1407,6 +1713,20 @@ class CSSInspectorFloatingPanel{
                 }
                 // customCss.setCssEnabledStatus(snippetName, true)
                 new Notice('已保存✅\ncss文件路径: ' + snippetFile);
+                const tempName = `--ui-designer-${this.app.vault.getName()}-temp`;
+                const tempFile = `${snippetsPath}/${tempName}.css`;
+                await this.app.vault.adapter.exists(tempFile).then(async exists => {
+                    if (exists) {
+                        await this.app.vault.adapter.remove(tempFile).then(async () => {
+                            // 刷新 Snippets 列表
+                            await this.app.customCss.readSnippets().then(() => {
+                                // new Notice('✅已删除临时预览样式');
+                            });
+                        });
+                    }
+                });
+                this.selectorInstance.cancel(); // 关闭选择器覆盖层
+                this.destroy();
             }));
         setting.nameEl.classList.add('visual-ui-editor-setting-name');
         setting.descEl.classList.add('visual-ui-editor-setting-desc');
@@ -1415,22 +1735,45 @@ class CSSInspectorFloatingPanel{
         const closeBtn = handle.createEl('span', { text: '×' });
         Object.assign(closeBtn.style, { float: 'right', cursor: 'pointer' });
         closeBtn.onclick = async () => {
-            //删除临时预览样式
-            const snippetsPath = this.app.vault.configDir + '/snippets';
-            const snippetName = `--ui-designer-${this.app.vault.getName()}-temp`;
-            const snippetFile = `${snippetsPath}/${snippetName}.css`;
-            await this.app.vault.adapter.exists(snippetFile).then(async exists => {
-                if (exists) {
-                    await this.app.vault.adapter.remove(snippetFile).then(async () => {
-                        // 刷新 Snippets 列表
-                        await this.app.customCss.readSnippets().then(() => {
-                            // new Notice('✅已删除临时预览样式');
+            if(this.style === '') {
+                //删除临时预览样式
+                const snippetsPath = this.app.vault.configDir + '/snippets';
+                const snippetName = `--ui-designer-${this.app.vault.getName()}-temp`;
+                const snippetFile = `${snippetsPath}/${snippetName}.css`;
+                await this.app.vault.adapter.exists(snippetFile).then(async exists => {
+                    if (exists) {
+                        await this.app.vault.adapter.remove(snippetFile).then(async () => {
+                            // 刷新 Snippets 列表
+                            await this.app.customCss.readSnippets().then(() => {
+                                // new Notice('✅已删除临时预览样式');
+                            });
                         });
-                    });
-                }
-            });
-            this.selectorInstance.cancel(); // 关闭选择器覆盖层
-            this.destroy();
+                    }
+                });
+                this.selectorInstance.cancel(); // 关闭选择器覆盖层
+                this.destroy();
+                return;
+            }
+
+            // eslint-disable-next-line no-alert
+            if(confirm('确定要关闭预览面板吗？未保存的样式将会丢失！')) {
+                //删除临时预览样式
+                const snippetsPath = this.app.vault.configDir + '/snippets';
+                const snippetName = `--ui-designer-${this.app.vault.getName()}-temp`;
+                const snippetFile = `${snippetsPath}/${snippetName}.css`;
+                await this.app.vault.adapter.exists(snippetFile).then(async exists => {
+                    if (exists) {
+                        await this.app.vault.adapter.remove(snippetFile).then(async () => {
+                            // 刷新 Snippets 列表
+                            await this.app.customCss.readSnippets().then(() => {
+                                // new Notice('✅已删除临时预览样式');
+                            });
+                        });
+                    }
+                });
+                this.selectorInstance.cancel(); // 关闭选择器覆盖层
+                this.destroy();
+            }
         };
 
         document.body.appendChild(this.el);
@@ -1478,7 +1821,7 @@ class MultiSelectorInstance {
 
     private setupListeners() {
         document.addEventListener('mousemove', this.onMouseMove, true);
-        document.addEventListener('click', this.onClick, true);
+        document.addEventListener('click', this.onClick, {capture: true});
 
         this.updateInterval = window.setInterval(() => {
             if(this.showOverlays) {
@@ -1689,19 +2032,12 @@ class MultiSelectorInstance {
         if(this.frozen) return; // 如果已经冻结，说明编辑器弹窗已打开，不再响应点击事件
         this.toggleOverlays(false); // 关闭覆盖层显示，避免干扰编辑器操作
         e.preventDefault();
-        e.stopPropagation();
+        e.stopImmediatePropagation();
 
         if (!this.mouseEl) return;
 
-        
-        // navigator.clipboard.writeText(this.selector);
-        // new Notice(`已复制选择器: ${this.selector}`);
-
-        // 打开编辑器弹窗，并将当前点击的元素传入
         new CSSInspectorFloatingPanel(this.app, this.mouseEl, this, this.pugin).open().setPosition(e.clientX + 30, 100);
         this.frozen = true; // 冻结状态，防止后续鼠标移动干扰选择
-
-        // this.destroy();
     };
 
     private destroy() {

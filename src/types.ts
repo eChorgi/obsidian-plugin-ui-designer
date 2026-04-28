@@ -33,7 +33,7 @@ export interface UISetting {
   default?: string; // 可以使用更具体的类型，比如 string | number | boolean
   subs?: UISetting[];
   on?: string;
-  also?: string;
+  also?: string[];
   role?: RoleType;
 }
 declare module "obsidian" {
