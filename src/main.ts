@@ -895,7 +895,7 @@ class CSSInspectorFloatingPanel{
 
         // --- 拖拽手柄 ---
         const handle = this.el.createDiv({ cls: 'visual-ui-editor-drag-handle' });
-        handle.textContent = '⋮ UI 样式修改器11';
+        handle.textContent = '⋮ UI 样式修改器 (拖动我移动位置)';
         handle.classList.add('visual-ui-editor-title')
         // 拖拽逻辑 (使用箭头函数自动绑定 this)
         handle.onmousedown = (e) => {
