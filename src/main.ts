@@ -1520,9 +1520,6 @@ class CSSInspectorFloatingPanel{
                 .setTooltip('抹除所有该元素设置过的历史样式，恢复到未设置状态')
                 .onClick(async () => {
                     //弹出确认框
-                    // new ConfirmModal(this.app, '确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！', async () => {
-                    //禁用no-alert规则，使用window.confirm替代Obsidian的ConfirmModal，以支持多行文本显示
-
                     if(await ConfirmModal.confirm(this.app, '确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！')){
                     // if(confirm('确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！')) {
                     // window.confirm('确定要抹除所有该元素设置过的 [历史] 样式吗？\n该元素将恢复为没有设置过任何样式的状态, 该操作无法撤销！').then(async () => {
@@ -1755,8 +1752,8 @@ class CSSInspectorFloatingPanel{
                 return;
             }
 
-            // eslint-disable-next-line no-alert
-            if(confirm('确定要关闭预览面板吗？未保存的样式将会丢失！')) {
+           
+            if(await ConfirmModal.confirm(this.app,'确定要关闭预览面板吗？未保存的样式将会丢失！')) {
                 //删除临时预览样式
                 const snippetsPath = this.app.vault.configDir + '/snippets';
                 const snippetName = `--ui-designer-${this.app.vault.getName()}-temp`;
